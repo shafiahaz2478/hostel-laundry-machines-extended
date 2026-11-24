@@ -1,10 +1,12 @@
 from sqlalchemy import Integer, String, Column, create_engine, DateTime, ForeignKey, func
 from sqlalchemy.orm import Session, declarative_base
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 import jwt
 
+
+ph = PasswordHasher()
 
 DB_PATH = "laundry.db"
 engine = create_engine(f"sqlite:///{DB_PATH}")
@@ -30,7 +32,7 @@ class Runs(Base):
     __tablename__ = "runs"
     id = Column(Integer, primary_key=True)
     machine_id = Column(Integer, ForeignKey("machines.id"))
-    roll_no = Column(String)
+    roll_no = Column(String,ForeignKey("Users.id"))
     started_at = Column(DateTime , default=datetime.now())
     ends_at = Column(DateTime)
     collected_at = Column(DateTime, nullable=True)
@@ -38,7 +40,7 @@ class Runs(Base):
 
 class Users(Base):
     __tablename__ = "Users"
-    user_id = Column(Integer, primary_key=True)
+    id = Column(Integer, primary_key=True)
     user_name = Column(String)
     password = Column(String)
     user_type = Column(String, default = "user")
@@ -383,9 +385,9 @@ def add_a_machine(name,block,kind,cycle_minutes): #E3, Add a machines a machine 
         return {"code": 422, "msg": "Missing or Empty field"}
 
 
-def create_token(username, token_type,user_type="user"):
+def create_token(user_id, token_type,user_type="user"):
     payload = {
-        "username": username,
+        "user_id": user_id,
         'token_type': token_type,
         'user_type': user_type,
         "exp": datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRY if token_type == "access" else REFRESH_TOKEN_EXPIRY)  # turnery expression
@@ -405,34 +407,34 @@ def verify_token(token,token_type):
     return False
 
 
-def verify_login(username, password):
+def verify_login(username , password):
     session = Session(engine)
-    user = session.query(Users).filter_by(user_name = username).first()
-    if user is None:
+    user = session.query(Users).filter_by(user_name=username).first()
+    if not user:
         session.close()
-        return False
+        return {"code":401, "msg":"Invalid credentials"}
+
     try:
-        ph.verify(user.password,password)
+        ph.verify(user.password, password)
     except VerifyMismatchError:
         session.close()
-        return False
-    if user.user_type:
-        user_type = user.user_type
-    else:
-        user_type = "user"
-    session.close()
-    access_token = create_token(username=username, token_type="access",user_type=user_type)
-    refresh_token = create_token(username=username, token_type="refresh",user_type=user_type)
-    return {"access_token": access_token, "refresh_token": refresh_token}
+        return {"code":401, "msg":"Invalid credentials"}
 
-def register_user(user_name:str,password:str,user_type:str="user"):
+    session.close()
+
+    access_token = create_token(username,"access")
+    refresh_token = create_token(username,"refresh")
+
+    return {"code":200, "tokens":{"access_token":access_token , "refresh_token": refresh_token}}
+
+def register_user(username,password,user_type):
     session = Session(engine)
-    user_exists = session.query(Users).filter_by(user_name=user_name).first()
-    if user_exists is not None:
+    user_exist = session.query(Users).filter_by(user_name=username).first()
+    if user_exist:
         session.close()
-        return False
-    session.add(Users(user_name=user_name,password=ph.hash(password),user_type=user_type))
+        return {"code":400, "msg":"username already exist"}
+    session.add(Users(user_name=username,password=ph.hash(password),user_type=user_type))
     session.commit()
     session.close()
-    return True
+    return {"code":200 , "msg":"User created"}
 
